@@ -1,0 +1,4 @@
+node_modules
+todo.txt
+game_data.sqlite
+.env
