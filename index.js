@@ -26,6 +26,7 @@ dotenv.config();
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.CLIENT_ID;
 const guildId = process.env.GUILD_ID;
+const parentCatagory = process.env.CHANNEL_CATAGORY;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -107,18 +108,23 @@ client.on("interactionCreate", async (interaction) => {
     const voiceChannel = await interaction.guild.channels.create({
       name: "Werewolf Game",
       type: ChannelType.GuildVoice,
-      parent: "1258271630321385544",
+      parent: parentCatagory || null,
       permissionOverwrites: [
         {
           id: interaction.guild.id,
           deny: [PermissionFlagsBits.ViewChannel],
         },
-        {
-          id: user.id,
-          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect],
-        },
       ],
     });
+
+    // ? Check this works | moved for accurate player DB check later
+    // Create game in database and Initialize game state `setup`
+    await db.run(
+      "INSERT INTO games (channelId, isActive, currentPhase) VALUES (?, ?, ?)",
+      voiceChannel.id,
+      true,
+      "setup"
+    );
 
     // Add start button in the voice channel text chat
     const startGameBtn = new ButtonBuilder()
@@ -126,55 +132,62 @@ client.on("interactionCreate", async (interaction) => {
       .setLabel("Start Game")
       .setStyle(ButtonStyle.Success);
 
-    const startButtonRow = new ActionRowBuilder().addComponents(startGameBtn);
+    const startGameBtnRow = new ActionRowBuilder().addComponents(startGameBtn);
 
     await voiceChannel.send({
       content: "Click to start the game!",
-      components: [startButtonRow],
+      components: [startGameBtnRow],
     });
 
     // Set up game loop when start button is clicked
     const startFilter = (i) =>
-      i.customId === `start_werewolf_${voiceChannel.id}` &&
-      i.user.id === user.id;
+      // * host can only start game
+      // i.customId === `start_werewolf_${voiceChannel.id}` &&
+      // i.user.id === user.id;
+      // * anyone can start game
+      i.customId === `start_werewolf_${voiceChannel.id}`;
     const startCollector = voiceChannel.createMessageComponentCollector({
       filter: startFilter,
       time: 120000, // 2 minutes
     });
 
     // Create a button to join the voice channel
-    const joinWerewolf = new ButtonBuilder()
+    const joinGameBtn = new ButtonBuilder()
       .setCustomId(`join_werewolf_${voiceChannel.id}`)
       .setLabel("Join Werewolf Game")
       .setStyle(ButtonStyle.Primary);
 
-    const joinButtonRow = new ActionRowBuilder().addComponents(joinWerewolf);
+    const joinGameBtnRow = new ActionRowBuilder().addComponents(joinGameBtn);
 
     const joinMessage = await interaction.reply({
       content: "Join the Werewolf channel!",
-      components: [joinButtonRow],
+      components: [joinGameBtnRow],
     });
 
     // Listen for button interaction to join voice channel
-    const filter = (i) => i.customId === `join_werewolf_${voiceChannel.id}`;
-    const collector = interaction.channel.createMessageComponentCollector({
-      filter,
-      time: 120000, // 2 minutes
-    });
+    const joinGameFilter = (i) =>
+      i.customId === `join_werewolf_${voiceChannel.id}`;
+    const joinGameCollector =
+      interaction.channel.createMessageComponentCollector({
+        joinGameFilter,
+        time: 120000, // 2 minutes
+      });
 
-    collector.on("collect", async (i) => {
+    joinGameCollector.on("collect", async (i) => {
       if (i.customId === `join_werewolf_${voiceChannel.id}`) {
         const member = await interaction.guild.members.fetch(i.user.id);
 
         // Check the user is already added to the game
+        // ? gameId should exist now in game DB for foreign key constraint
         const player = await db.get(
           "SELECT * FROM players WHERE id = ? AND gameId = ?",
           member.id,
           channelId
         );
 
-        if (player) {
-          // Give the member permissions to view and send messages in the text channel
+        //! Check application is working after fixing this if statement
+        if (!player) {
+          // Give the member permissions to view and send messages in the voice channel
           await voiceChannel.permissionOverwrites.create(member, {
             [PermissionFlagsBits.ViewChannel]: true,
             [PermissionFlagsBits.Connect]: true,
@@ -207,83 +220,92 @@ client.on("interactionCreate", async (interaction) => {
             content: "Game starting...",
             components: [],
           });
+
+          // Trigger the end event for joinGameCollector
+          await stopCollector(joinGameCollector);
         } catch (error) {
           console.error("Error updating interaction:", error);
         }
-
-        // Delete the joinWerewolf button message
-        if (joinMessage) {
-          joinMessage.delete();
-        }
-
-        // Initialize game state in the database
-        await db.run(
-          "INSERT INTO games (channelId, isActive, currentPhase) VALUES (?, ?, ?)",
-          voiceChannel.id,
-          true,
-          "setup"
-        );
-
-        // Assign roles to players
-        // const members = Array.from(voiceChannel.members.values());
-        // await assignRoles(members, voiceChannel.id);
 
         // Start game loop
         startNewGame(voiceChannel.id);
       }
     });
 
-    collector.on("end", (collected) => {
+    joinGameCollector.on("end", async (collected) => {
       try {
         if (collected.size === 0) {
-          interaction.followUp({
+          await interaction.followUp({
             content: "No one joined the voice channel in time.",
             components: [],
           });
-          voiceChannel.delete();
+          // Remove the voice channel
+          await voiceChannel.delete();
+          // Remove the game from the database
+          await db.run(
+            "DELETE FROM games WHERE channelId = ?",
+            voiceChannel.id
+          );
+        } else {
+          // Check if players are actually in the channel
+          const membersInChannel = await voiceChannel.members;
+          if (membersInChannel.size === 0) {
+            // Remove the voice channel
+            await voiceChannel.delete();
+            // Remove the game from the database
+            await db.run(
+              "DELETE FROM games WHERE channelId = ?",
+              voiceChannel.id
+            );
+          } else {
+            // Clean up join button if players joined
+            if (joinMessage) {
+              await joinMessage.delete();
+            }
+          }
         }
       } catch (error) {
         console.error(
-          `collector end for interactionCreate with channelId: ${channelId} had error: ${error}`
+          `joinGameCollector end for interactionCreate with channelId: ${channelId} had error: ${error}`
         );
       }
     });
   }
 
-  // Handle 'accesssoundboard' command
-  if (commandName === "accesssoundboard") {
-    try {
-      // Check if the user is in any active game
-      const activeGames = await db.all(
-        "SELECT * FROM games WHERE isActive = 1"
-      );
-      const userGames = await db.all(
-        "SELECT * FROM players WHERE id = ?",
-        user.id
-      );
+  // // Handle 'accesssoundboard' command
+  // if (commandName === "accesssoundboard") {
+  //   try {
+  //     // Check if the user is in any active game
+  //     const activeGames = await db.all(
+  //       "SELECT * FROM games WHERE isActive = 1"
+  //     );
+  //     const userGames = await db.all(
+  //       "SELECT * FROM players WHERE id = ?",
+  //       user.id
+  //     );
 
-      const isInActiveGame = userGames.some((player) =>
-        activeGames.some((game) => game.channelId === player.gameId)
-      );
+  //     const isInActiveGame = userGames.some((player) =>
+  //       activeGames.some((game) => game.channelId === player.gameId)
+  //     );
 
-      if (!isInActiveGame) {
-        // Grant soundboard permissions
-        await interaction.guild.members.fetch(user.id); // Fetch member details
+  //     if (!isInActiveGame) {
+  //       // Grant soundboard permissions
+  //       await interaction.guild.members.fetch(user.id); // Fetch member details
 
-        await interaction.member.permissions.add(["USE_SOUNDBOARD"]);
-        await interaction.reply(
-          "You have been granted access to the soundboard."
-        );
-      } else {
-        await interaction.reply(
-          "You cannot have soundboard access while you are a player of an active game."
-        );
-      }
-    } catch (error) {
-      console.error("Error accessing database:", error);
-      await interaction.reply("There was an error processing your request.");
-    }
-  }
+  //       await interaction.member.permissions.add(["USE_SOUNDBOARD"]);
+  //       await interaction.reply(
+  //         "You have been granted access to the soundboard."
+  //       );
+  //     } else {
+  //       await interaction.reply(
+  //         "You cannot have soundboard access while you are a player of an active game."
+  //       );
+  //     }
+  //   } catch (error) {
+  //     console.error("Error accessing database:", error);
+  //     await interaction.reply("There was an error processing your request.");
+  //   }
+  // }
 });
 
 // Function to start a new game
@@ -607,7 +629,7 @@ const nightVote = async (game, voteTimer) => {
 
 // Game loop function
 async function gameLoop(game) {
-  // Loop until game is active
+  // Loop until game is no longer active
 
   //TODO: collectors in array
   //TODO: stop collectors after they are no longer needed or before being reassigned
@@ -652,13 +674,14 @@ async function gameLoop(game) {
     );
   }
 
-  // Clean up game resources (delete channel, clear database, etc.)
+  // TODO: cleanup function
+  // * Clean up game resources
+  // Remove game and associated players from databases
   await db.run("DELETE FROM games WHERE channelId = ?", game.channelId);
   await db.run("DELETE FROM players WHERE gameId = ?", game.channelId);
+  // Get channel Id
   const channel = client.channels.cache.get(game.channelId);
-  //turn this into an array of collectors to iterate through without needing the name
-  // stopCollector(game.collectorVote);
-  // stopCollector(game.roleFeedbackCollector);
+  // Stop all the collectors
   await stopAllCollectors(game.roundCollectors);
   await stopAllCollectors(game.gameCollectors);
   if (channel) {
@@ -667,16 +690,16 @@ async function gameLoop(game) {
 }
 
 // Utility function to safely stop a collector
-const stopCollector = (collector) => {
+const stopCollector = async (collector) => {
   if (collector && !collector.ended) {
-    collector.stop();
+    await collector.stop();
   }
 };
 
-// Utility function to stop all collectors
+// Utility function to safely stop all collectors
 async function stopAllCollectors(collectors) {
   for (const collector of collectors) {
-    await collector.stop();
+    await stopCollector(collector);
   }
   //clear the array without reassigning it
   collectors.length = 0;
