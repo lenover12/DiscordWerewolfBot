@@ -435,30 +435,28 @@ const feedbackRoles = async (game) => {
   const channelId = game.channelId;
 
   // Create and send the role check button
-  const roleCheckButton = new ButtonBuilder()
+  const roleCheckBtn = new ButtonBuilder()
     .setCustomId(`check_role_${channelId}`)
     .setLabel("Check Your Role")
     .setStyle(ButtonStyle.Danger);
 
-  const roleCheckButtonRow = new ActionRowBuilder().addComponents(
-    roleCheckButton
-  );
+  const roleCheckBtnRow = new ActionRowBuilder().addComponents(roleCheckBtn);
 
   const channel = client.channels.cache.get(channelId);
   if (channel) {
     const roleCheckMessage = await channel.send({
       content: "Click the button to check your role.",
-      components: [roleCheckButtonRow],
+      components: [roleCheckBtnRow],
     });
 
     // Set up a collector for the role check button
-    const filter = (i) => i.customId === `check_role_${channelId}`;
-    const collector = channel.createMessageComponentCollector({
-      filter,
+    const roleCheckFilter = (i) => i.customId === `check_role_${channelId}`;
+    const roleCheckCollector = channel.createMessageComponentCollector({
+      roleCheckFilter,
       time: 600000,
     }); // 10 minutes
 
-    collector.on("collect", async (i) => {
+    roleCheckCollector.on("collect", async (i) => {
       const playerId = i.user.id;
 
       // Fetch player role from database based on user.id and channelId
@@ -508,23 +506,24 @@ const feedbackRoles = async (game) => {
       }
     });
 
-    collector.on("end", () => {
+    roleCheckCollector.on("end", async () => {
       try {
         if (roleCheckMessage) {
-          roleCheckMessage.edit({
-            content: "The role check button is no longer active.",
-            components: [],
-          });
+          // roleCheckMessage.edit({
+          //   content: "The role check button is no longer active.",
+          //   components: [],
+          // });
+          await roleCheckMessage.delete();
         }
       } catch (error) {
         console.error(
-          `collector end for feebackRoles with channelId: ${channelId} had error: ${error} `
+          `roleCheckCollector end for feebackRoles with channelId: ${channelId} had error: ${error} `
         );
       }
     });
 
     //add the collector to the game state
-    game.gameCollectors.push(collector);
+    game.gameCollectors.push(roleCheckCollector);
   } else {
     console.error(`Channel with ID ${channelId} not found.`);
   }
@@ -1182,6 +1181,21 @@ async function dayPhase(channelId) {
     channelId
   );
 }
+
+//Get players from database
+const getPlayers = async (channelId, columns = ["*"]) => {
+  // Create a SQL query with the specified columns
+  const columnNames = columns.join(", ");
+  const query = `SELECT ${columnNames} FROM players WHERE gameId = ?`;
+
+  try {
+    const players = await db.all(query, channelId);
+    return players;
+  } catch (error) {
+    console.error(`Error fetching players: ${error}`);
+    throw error;
+  }
+};
 
 // Utility function for sleep
 function sleep(ms) {
