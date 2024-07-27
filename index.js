@@ -33,6 +33,9 @@ const __dirname = path.dirname(__filename);
 
 const dbPath = path.resolve(__dirname, "game_data.sqlite");
 
+//NON-MAGIC NUMBERS
+const MIN_PLAYERS = 3;
+
 const initDatabase = async () => {
   const db = await open({
     filename: dbPath,
@@ -216,6 +219,22 @@ client.on("interactionCreate", async (interaction) => {
     startCollector.on("collect", async (i) => {
       if (i.customId === `start_werewolf_${voiceChannel.id}`) {
         try {
+          // Count the number of players in the database for this game
+          const playerCount = await db.get(
+            "SELECT COUNT(*) AS count FROM players WHERE gameId = ?",
+            voiceChannel.id
+          );
+
+          // Start the game only if there are enough players
+          if (playerCount.count < MIN_PLAYERS) {
+            // Not enough players
+            await i.reply({
+              content: `We need at least ${MIN_PLAYERS} players to start the game. Currently, we have ${playerCount.count}.`,
+              ephemeral: true,
+            });
+            return;
+          }
+
           await i.update({
             content: "Game starting...",
             components: [],
@@ -223,12 +242,17 @@ client.on("interactionCreate", async (interaction) => {
 
           // Trigger the end event for joinGameCollector
           await stopCollector(joinGameCollector);
+
+          // Start game loop
+          startNewGame(voiceChannel.id);
         } catch (error) {
           console.error("Error updating interaction:", error);
+          // Send error message to user pressing the button
+          await i.reply({
+            content: "There was an error starting the game. Please try again.",
+            ephemeral: true,
+          });
         }
-
-        // Start game loop
-        startNewGame(voiceChannel.id);
       }
     });
 
@@ -332,8 +356,56 @@ const assignRoles = async (channelId) => {
     channelId
   );
 
-  const werewolfCount = Math.floor(players.length / 4); // Adjust as per your game rules
-  const roles = ["werewolf", "doctor", "detective", "civilian"];
+  const playerCount = players.length;
+
+  if (playerCount < 3) {
+    throw new Error("Not enough players to start the game.");
+  }
+
+  let werewolfCount, doctorCount, detectiveCount;
+
+  const randomBetween = (min, max) =>
+    Math.floor(Math.random() * (max - min + 1)) + min;
+
+  if (playerCount >= 3 && playerCount <= 4) {
+    werewolfCount = 1;
+    doctorCount = 1;
+    detectiveCount = 1;
+  } else if (playerCount === 5) {
+    werewolfCount = randomBetween(1, 2);
+    doctorCount = 1;
+    detectiveCount = 1;
+  } else if (playerCount >= 6 && playerCount <= 7) {
+    werewolfCount = randomBetween(1, 2);
+    doctorCount = 1;
+    detectiveCount = randomBetween(1, 2);
+  } else if (playerCount === 8) {
+    werewolfCount = 2;
+    doctorCount = randomBetween(1, 2);
+    detectiveCount = randomBetween(1, 2);
+  } else if (playerCount >= 9 && playerCount <= 11) {
+    werewolfCount = randomBetween(2, 3);
+    doctorCount = randomBetween(1, 2);
+    detectiveCount = randomBetween(1, 2);
+  } else if (playerCount === 12) {
+    werewolfCount = 3;
+    doctorCount = randomBetween(1, 2);
+    detectiveCount = randomBetween(1, 2);
+  } else if (playerCount >= 13) {
+    werewolfCount = randomBetween(3, 4);
+    doctorCount = randomBetween(1, 2);
+    detectiveCount = randomBetween(1, 2);
+  }
+
+  const totalAssignedRoles = werewolfCount + doctorCount + detectiveCount;
+  const civilianCount = playerCount - totalAssignedRoles;
+
+  const roles = [
+    ...Array(werewolfCount).fill("werewolf"),
+    ...Array(doctorCount).fill("doctor"),
+    ...Array(detectiveCount).fill("detective"),
+    ...Array(civilianCount).fill("civilian"),
+  ];
 
   // Shuffle roles
   for (let i = roles.length - 1; i > 0; i--) {
@@ -342,7 +414,7 @@ const assignRoles = async (channelId) => {
   }
 
   for (let i = 0; i < players.length; i++) {
-    const role = i < werewolfCount ? "werewolf" : roles[i - werewolfCount];
+    const role = roles[i];
     const playerId = players[i].id;
 
     // Update player role in the database
