@@ -182,11 +182,7 @@ client.on("interactionCreate", async (interaction) => {
 
         // Check the user is already added to the game
         // ? gameId should exist now in game DB for foreign key constraint
-        const player = await db.get(
-          "SELECT * FROM players WHERE id = ? AND gameId = ?",
-          member.id,
-          channelId
-        );
+        const player = await getPlayer(channelId, playerId);
 
         //! Check application is working after fixing this if statement
         if (!player) {
@@ -351,10 +347,7 @@ const startNewGame = async (channelId) => {
 };
 
 const assignRoles = async (channelId) => {
-  const players = await db.all(
-    "SELECT id FROM players WHERE gameId = ?",
-    channelId
-  );
+  const players = await getPlayers(channelId, ["id"]);
 
   const playerCount = players.length;
 
@@ -460,11 +453,7 @@ const feedbackRoles = async (game) => {
       const playerId = i.user.id;
 
       // Fetch player role from database based on user.id and channelId
-      const player = await db.get(
-        "SELECT role FROM players WHERE id = ? AND gameId = ?",
-        playerId,
-        channelId
-      );
+      const player = await getPlayer(channelId, playerId, ["role"]);
 
       if (player) {
         let response = "";
@@ -807,10 +796,7 @@ const playerQuotes = [
 // Function to introduce werewolf game in the text channel of a voice channel
 async function introduceWerewolf(channelId) {
   // Query the database to get all players' roles for the current game
-  const players = await db.all(
-    "SELECT * FROM players WHERE gameId = ?",
-    channelId
-  );
+  const players = await getPlayers(channelId);
 
   // Get channel
   const channel = client.channels.cache.get(channelId);
@@ -1002,10 +988,12 @@ async function checkGameState(channelId) {
 // Handle the end of the voting period
 async function handleVoteEnd(channelId) {
   // Fetch all players in the game
-  const players = await db.all(
-    "SELECT id, role, votedFor, name FROM players WHERE gameId = ?",
-    channelId
-  );
+  const players = await getPlayers(channelId, [
+    "id",
+    "role",
+    "votedFor",
+    "name",
+  ]);
 
   // Separate players by roles, including only those who contributed
   const werewolves = players.filter(
@@ -1193,6 +1181,20 @@ const getPlayers = async (channelId, columns = ["*"]) => {
     return players;
   } catch (error) {
     console.error(`Error fetching players: ${error}`);
+    throw error;
+  }
+};
+
+const getPlayer = async (channelId, playerId, columns = ["*"]) => {
+  // Create a SQL query with the specified columns
+  const columnNames = columns.join(", ");
+  const query = `SELECT ${columnNames} FROM players WHERE id = ? AND gameId = ?`;
+
+  try {
+    const player = await db.get(query, playerId, channelId);
+    return player;
+  } catch (error) {
+    console.error(`Error fetching player: ${error}`);
     throw error;
   }
 };
